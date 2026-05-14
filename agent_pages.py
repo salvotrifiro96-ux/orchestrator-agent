@@ -73,88 +73,151 @@ def render_agent_page(
 # ── 1. Promise Writer ────────────────────────────────────────────
 def _render_promise(*, project: Project, agent_def: AgentDef, project_agent: ProjectAgent, store: ProjectStore) -> None:
     ctx = project.context
-    st.subheader("🪄 Genera promesse")
-    cols = st.columns(2)
-    n = cols[0].slider("Quante promesse?", 5, 25, value=int(project_agent.user_input.get("n_headlines", 10)))
-    extra = cols[1].text_input("Indicazioni extra (opzionale)", value=project_agent.user_input.get("extra_instructions", ""))
-
-    if st.button("🪄 Genera promesse", type="primary"):
-        if not _anthropic_key():
-            st.error("Manca ANTHROPIC_API_KEY")
-            return
-        _set_running(store, project.id, "promise")
-        ctx_blob = _context_to_blob(ctx)
-        try:
-            with st.spinner(f"Genero {n} promesse…"):
-                res = promise_t.generate_promises(
-                    api_key=_anthropic_key(),
-                    context=ctx_blob,
-                    target_audience=ctx.get("target_audience", ""),
-                    brand_voice=ctx.get("brand_voice", ""),
-                    n_headlines=n,
-                    extra_instructions=extra,
-                    save_to_archive=True,
-                )
-            _save_output_pending(store, project.id, "promise", res, user_input={"n_headlines": n, "extra_instructions": extra})
-            st.rerun()
-        except Exception as e:
-            st.error(f"Generazione fallita: {e}")
-
     promises = (project_agent.output or {}).get("promises") or []
-    if promises:
-        st.divider()
-        st.subheader(f"📦 Output: {len(promises)} promesse")
-        for i, p in enumerate(promises):
-            with st.container(border=True):
-                if p.get("pre_headline"):
-                    st.caption(f"_{p['pre_headline']}_")
-                if p.get("usp_name"):
-                    st.markdown(
-                        f"<div style='font-size:1.4rem; font-weight:800; color:#16a34a;'>{p['usp_name']}</div>",
-                        unsafe_allow_html=True,
-                    )
-                st.markdown(f"### {p.get('headline','')}")
-                if p.get("sub_headline"):
-                    st.markdown(f"_{p['sub_headline']}_")
+    selected = project.selected_promise
+
+    if selected:
+        st.success("✅ Promessa ufficiale del progetto scelta — visibile a tutti gli altri agenti.")
+        with st.container(border=True):
+            _render_promise_card(selected)
+        cols = st.columns([1, 1, 3])
+        if cols[0].button("🔄 Cambia promessa", use_container_width=True):
+            # Riapro la scelta: rimuovo selected dal progetto + status agent torna pending_approval
+            store.update_project(project.id, selected_promise=None)
+            store.update_agent(project.id, "promise", status="pending_approval")
+            st.rerun()
+        if cols[1].button("🔁 Rigenera tutte", use_container_width=True):
+            _regenerate_all_promises(store, project, ctx)
+            st.rerun()
+        st.caption("Cambiando promessa, gli output degli agenti che la usavano resteranno (puoi rigenerarli).")
+        return
+
+    # Nessuna promessa ufficiale scelta ancora
+    if not promises:
+        st.info("Nessuna promessa generata ancora. Clicca qui per produrne 10 ora.")
+        if st.button("🪄 Genera 10 promesse", type="primary"):
+            _regenerate_all_promises(store, project, ctx, n=10)
+            st.rerun()
+        return
+
+    st.subheader(f"🪄 {len(promises)} promesse generate — scegli quella ufficiale del progetto")
+    st.caption(
+        "Tutti gli altri agenti (Copywriter, Web Designer, Graphic, Media Buyer) "
+        "useranno la promessa che selezioni qui. Puoi cambiarla in qualunque "
+        "momento. Per editing fine (rigenera solo la headline / il sub / l'USP) "
+        "usa il [Promise Writer standalone](https://promise-writer-agent.streamlit.app)."
+    )
+
+    # Bottoni rigenera/aggiungi
+    bc = st.columns([1, 1, 3])
+    if bc[0].button("🔁 Rigenera tutte (10)", use_container_width=True):
+        _regenerate_all_promises(store, project, ctx, n=10)
+        st.rerun()
+    if bc[1].button("➕ Aggiungi 5", use_container_width=True):
+        _add_more_promises(store, project, ctx, project_agent, n=5)
+        st.rerun()
+
+    st.divider()
+
+    for i, p in enumerate(promises):
+        with st.container(border=True):
+            _render_promise_card(p)
+            if st.button("🎯 Approva questa come promessa ufficiale", key=f"approve_promise_{i}", type="primary"):
+                store.update_project(project.id, selected_promise=p)
+                store.update_agent(project.id, "promise", status="completed")
+                st.success(f"Promessa #{i+1} approvata come ufficiale.")
+                st.rerun()
+
+
+def _render_promise_card(p: dict[str, Any]) -> None:
+    if p.get("pre_headline"):
+        st.caption(f"_{p['pre_headline']}_")
+    if p.get("usp_name"):
+        st.markdown(
+            f"<div style='font-size:1.4rem; font-weight:800; color:#16a34a;'>{p['usp_name']}</div>",
+            unsafe_allow_html=True,
+        )
+    st.markdown(f"### {p.get('headline','')}")
+    if p.get("sub_headline"):
+        st.markdown(f"_{p['sub_headline']}_")
+
+
+def _regenerate_all_promises(store: ProjectStore, project: Project, ctx: dict[str, Any], n: int = 10) -> None:
+    store.update_agent(project.id, "promise", status="work_in_progress")
+    try:
+        with st.spinner(f"Rigenero {n} promesse…"):
+            res = promise_t.generate_promises(
+                api_key=_anthropic_key(),
+                context=_context_to_blob(ctx),
+                target_audience=ctx.get("target_audience", ""),
+                brand_voice=ctx.get("brand_voice", ""),
+                n_headlines=n,
+                save_to_archive=True,
+                project_id=project.id,
+            )
+        store.update_agent(
+            project.id, "promise",
+            status="pending_approval",
+            output=res,
+            user_input={"n_headlines": n},
+        )
+    except Exception as e:
+        st.error(f"Rigenerazione fallita: {e}")
+        store.update_agent(project.id, "promise", status="pending_approval")
+
+
+def _add_more_promises(store: ProjectStore, project: Project, ctx: dict[str, Any], project_agent: ProjectAgent, n: int = 5) -> None:
+    store.update_agent(project.id, "promise", status="work_in_progress")
+    try:
+        with st.spinner(f"Aggiungo {n} promesse…"):
+            res = promise_t.generate_promises(
+                api_key=_anthropic_key(),
+                context=_context_to_blob(ctx),
+                target_audience=ctx.get("target_audience", ""),
+                brand_voice=ctx.get("brand_voice", ""),
+                n_headlines=n,
+                save_to_archive=False,  # estensione: non riapro un nuovo brief
+                project_id=project.id,
+            )
+        existing = (project_agent.output or {}).get("promises") or []
+        new = res.get("promises") or []
+        store.update_agent(
+            project.id, "promise",
+            status="pending_approval",
+            output={**(project_agent.output or {}), "promises": existing + new},
+        )
+    except Exception as e:
+        st.error(f"Aggiunta fallita: {e}")
+        store.update_agent(project.id, "promise", status="pending_approval")
 
 
 # ── 2. Copywriter ────────────────────────────────────────────────
 def _render_copy(*, project: Project, agent_def: AgentDef, project_agent: ProjectAgent, store: ProjectStore) -> None:
     ctx = project.context
-    promises = _get_completed_promises(store, project.id)
-    promise_options = [
-        f"#{i+1} {p.get('usp_name', '')} — {p.get('headline', '')[:60]}"
-        for i, p in enumerate(promises)
-    ]
+    if not _require_selected_promise(project):
+        return
+    promise = project.selected_promise or {}
 
     st.subheader("✍️ Genera copy")
+    st.caption("Usa la promessa ufficiale del progetto (in alto). Cambia canale e varianti.")
+    with st.container(border=True):
+        _render_promise_card(promise)
+
     cols = st.columns(2)
     channel = cols[0].selectbox("Canale", ["meta", "google", "tiktok", "linkedin"],
                                   index=["meta", "google", "tiktok", "linkedin"].index(project_agent.user_input.get("channel", "meta")))
     n_variants = cols[1].slider("Varianti", 3, 10, value=int(project_agent.user_input.get("n_variants", 5)))
-
-    if not promises:
-        st.warning("Non ci sono promesse generate ancora. Genera prima delle promesse nell'agente Promise Writer.")
-    selected_idx = st.selectbox(
-        "Promessa di riferimento",
-        options=list(range(len(promises))),
-        format_func=lambda i: promise_options[i] if i < len(promise_options) else "—",
-        index=0 if promises else None,
-        disabled=not promises,
-    )
     extra = st.text_input("Indicazioni extra (opzionale)", value=project_agent.user_input.get("extra_instructions", ""))
 
-    if st.button("✍️ Genera copy", type="primary", disabled=not promises):
-        promise_text = _promise_to_text(promises[selected_idx]) if promises else ""
+    if st.button("✍️ Genera copy", type="primary"):
         _set_running(store, project.id, "copy")
-        ctx_blob = _context_to_blob(ctx)
         try:
             with st.spinner(f"Genero {n_variants} copy {channel}…"):
                 res = copy_t.write_ad_copy(
                     api_key=_anthropic_key(),
                     channel=channel,
-                    context=ctx_blob,
-                    promise=promise_text,
+                    context=_context_to_blob(ctx),
+                    promise=_promise_to_text(promise),
                     target_audience=ctx.get("target_audience", ""),
                     brand_voice=ctx.get("brand_voice", ""),
                     n_variants=n_variants,
@@ -162,7 +225,7 @@ def _render_copy(*, project: Project, agent_def: AgentDef, project_agent: Projec
                 )
             _save_output_pending(
                 store, project.id, "copy", res,
-                user_input={"channel": channel, "n_variants": n_variants, "selected_promise_idx": selected_idx, "extra_instructions": extra},
+                user_input={"channel": channel, "n_variants": n_variants, "extra_instructions": extra},
             )
             st.rerun()
         except Exception as e:
@@ -236,20 +299,15 @@ def _render_landing(*, project: Project, agent_def: AgentDef, project_agent: Pro
 # ── 4. Graphic Designer (visual brief) ───────────────────────────
 def _render_graphic(*, project: Project, agent_def: AgentDef, project_agent: ProjectAgent, store: ProjectStore) -> None:
     ctx = project.context
-    promises = _get_completed_promises(store, project.id)
+    if not _require_selected_promise(project):
+        return
+    promise = project.selected_promise or {}
 
     st.subheader("🎨 Brief visivo")
-    promise_options = [
-        f"#{i+1} {p.get('usp_name', '')} — {p.get('headline', '')[:60]}"
-        for i, p in enumerate(promises)
-    ]
-    selected_idx = st.selectbox(
-        "Promessa di riferimento",
-        options=list(range(len(promises))),
-        format_func=lambda i: promise_options[i] if i < len(promise_options) else "—",
-        index=0 if promises else None,
-        disabled=not promises,
-    )
+    st.caption("Usa la promessa ufficiale del progetto.")
+    with st.container(border=True):
+        _render_promise_card(promise)
+
     cols = st.columns(3)
     ratio = cols[0].selectbox("Aspect ratio", ["1:1", "4:5", "9:16", "16:9"],
                               index=["1:1", "4:5", "9:16", "16:9"].index(project_agent.user_input.get("aspect_ratio", "1:1")))
@@ -258,10 +316,10 @@ def _render_graphic(*, project: Project, agent_def: AgentDef, project_agent: Pro
     must_have = st.text_input("Must-have (separati da virgola)", value=", ".join(project_agent.user_input.get("must_have", [])))
     must_avoid = st.text_input("Must-avoid (separati da virgola)", value=", ".join(project_agent.user_input.get("must_avoid", [])))
 
-    if st.button("🎨 Genera brief visivo", type="primary", disabled=not promises):
+    if st.button("🎨 Genera brief visivo", type="primary"):
         try:
             res = launch_t.make_visual_brief(
-                promise=_promise_to_text(promises[selected_idx]) if promises else "",
+                promise=_promise_to_text(promise),
                 target_audience=ctx.get("target_audience", ""),
                 channel=channel,
                 aspect_ratio=ratio,
@@ -284,6 +342,18 @@ def _render_graphic(*, project: Project, agent_def: AgentDef, project_agent: Pro
         st.divider()
         st.subheader("📦 Brief visivo")
         st.json(out)
+
+
+def _require_selected_promise(project: Project) -> bool:
+    """Helper UX: se la promessa ufficiale non e` stata scelta, mostra warning."""
+    if project.selected_promise:
+        return True
+    st.warning(
+        "⏳ Devi prima scegliere la **promessa ufficiale** del progetto. "
+        "Vai sull'agente 🪄 Promise Writer e clicca '🎯 Approva questa come "
+        "promessa ufficiale' sulla promessa che vuoi usare."
+    )
+    return False
 
 
 # ── 5. Media Buyer (propose launch) ──────────────────────────────

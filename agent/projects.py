@@ -132,6 +132,7 @@ class Project:
     discovery_messages: list[dict[str, Any]]
     created_at: str
     updated_at: str
+    selected_promise: dict[str, Any] | None = None  # la promessa ufficiale del progetto
     agents: list[ProjectAgent] = field(default_factory=list)
 
 
@@ -181,6 +182,7 @@ class ProjectStore:
             discovery_messages=row.get("discovery_messages", []) or [],
             created_at=row.get("created_at", ""),
             updated_at=row.get("updated_at", ""),
+            selected_promise=row.get("selected_promise"),
             agents=agents or [],
         )
 
@@ -237,12 +239,15 @@ class ProjectStore:
         status: str | None = None,
         context: dict[str, Any] | None = None,
         discovery_messages: list[dict[str, Any]] | None = None,
+        selected_promise: dict[str, Any] | None | object = ...,  # sentinel: ... = non toccare
     ) -> Project:
         body: dict[str, Any] = {"updated_at": "now()"}
         if name is not None: body["name"] = name
         if status is not None: body["status"] = status
         if context is not None: body["context"] = context
         if discovery_messages is not None: body["discovery_messages"] = discovery_messages
+        if selected_promise is not ...:
+            body["selected_promise"] = selected_promise
         r = requests.patch(
             f"{self._rest}/{PROJECTS_TABLE}",
             params={"id": f"eq.{project_id}"},

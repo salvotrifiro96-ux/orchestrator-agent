@@ -71,8 +71,15 @@ def generate_promises(
     references: str = "",
     extra_instructions: str = "",
     save_to_archive: bool = True,
+    project_id: str | None = None,
 ) -> dict[str, Any]:
-    """Genera N promesse Hormozi-style e (opzionalmente) le salva in archivio."""
+    """Genera N promesse Hormozi-style e (opzionalmente) le salva in archivio.
+
+    Se `project_id` e` valorizzato, il brief salvato viene linkato al progetto
+    orchestrator: cosi` anche aprendo il promise-writer standalone il brief
+    e` riconoscibile come appartenente a quel progetto e l'utente puo`
+    approvare una promessa direttamente da li`.
+    """
     promises = write_promises(
         api_key=api_key,
         context=context,
@@ -99,8 +106,9 @@ def generate_promises(
                         "extra_instructions": extra_instructions,
                     },
                     promises=payload_promises,
+                    project_id=project_id,
                 )
-                out["archive"] = {"saved": True, "brief_id": row.id, "title": row.title}
+                out["archive"] = {"saved": True, "brief_id": row.id, "title": row.title, "project_id": project_id}
             except Exception as e:  # silenzioso: la chat puo` continuare anche senza save
                 out["archive"] = {"saved": False, "error": str(e)}
         else:

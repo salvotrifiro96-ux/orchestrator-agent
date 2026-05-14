@@ -31,6 +31,7 @@ class BriefRow:
     promises: list[dict[str, Any]]
     created_at: str
     updated_at: str
+    project_id: str | None = None
 
 
 class BriefStore:
@@ -90,15 +91,18 @@ class BriefStore:
             promises=row.get("promises", []) or [],
             created_at=row.get("created_at", ""),
             updated_at=row.get("updated_at", ""),
+            project_id=row.get("project_id"),
         )
 
     # ── CRUD ──────────────────────────────────────────────────────────
-    def insert(self, brief: dict[str, Any], promises: list[dict[str, Any]]) -> BriefRow:
-        row = {
+    def insert(self, brief: dict[str, Any], promises: list[dict[str, Any]], project_id: str | None = None) -> BriefRow:
+        row: dict[str, Any] = {
             "title": self._derive_title(brief),
             "brief": brief,
             "promises": promises,
         }
+        if project_id:
+            row["project_id"] = project_id
         r = requests.post(
             f"{self._rest}/{TABLE}",
             data=json.dumps(row),

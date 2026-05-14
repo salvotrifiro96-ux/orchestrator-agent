@@ -99,6 +99,48 @@ def _go(view: str, **kwargs) -> None:
     st.rerun()
 
 
+def _auto_start_promise(store: ProjectStore, project_id: str, context: dict[str, Any]) -> None:
+    """Esegue il Promise Writer subito dopo la distribuzione del contesto.
+
+    Setta agent 'promise' a work_in_progress, genera 10 promesse, poi salva
+    output e setta status=pending_approval. La promessa ufficiale non e`
+    ancora scelta: l'utente la sceglie aprendo la pagina dell'agente Promise.
+    """
+    from tools import promise as promise_t  # lazy
+
+    store.update_agent(project_id, "promise", status="work_in_progress")
+    # serializzo contesto in blob testuale per il prompt promise-writer
+    lines = []
+    for k, v in (context or {}).items():
+        if not v:
+            continue
+        pretty = ", ".join(v) if isinstance(v, list) else str(v)
+        lines.append(f"## {k.replace('_', ' ').title()}\n{pretty}")
+    blob = "\n\n".join(lines)
+    try:
+        res = promise_t.generate_promises(
+            api_key=ANTHROPIC_KEY,
+            context=blob,
+            target_audience=context.get("target_audience", ""),
+            brand_voice=context.get("brand_voice", ""),
+            n_headlines=10,
+            save_to_archive=True,
+            project_id=project_id,
+        )
+        store.update_agent(
+            project_id, "promise",
+            status="pending_approval",
+            output=res,
+            user_input={"n_headlines": 10, "extra_instructions": "", "auto_started": True},
+        )
+    except Exception as e:
+        store.update_agent(
+            project_id, "promise",
+            status="received",
+            output={"error": str(e)},
+        )
+
+
 # ── STATUS helpers ─────────────────────────────────────────────────
 STATUS_LABELS = {
     "received": ("📨 Contesto ricevuto", "#64748b"),
@@ -251,12 +293,22 @@ def render_discovery() -> None:
                 )
                 # Inizializza i record agente (idempotente)
                 store.init_agents_for_project(project_id, edited)
+
+                # Auto-start: il Promise Writer non ha required_inputs,
+                # gli basta il contesto. Lo eseguiamo subito sincrono
+                # cosi` quando l'utente arriva sulla dashboard vede gia`
+                # le promesse pronte da approvare.
+                with st.spinner("Distribuisco il contesto e genero le prime promesse…"):
+                    _auto_start_promise(store, project_id, edited)
+
                 # Reset state
                 st.session_state.proposed_context = None
                 st.session_state.discovery_messages = []
                 _go("dashboard", project_id=project_id)
             except Exception as e:
                 st.error(f"Approvazione fallita: {e}")
+                with st.expander("Traceback"):
+                    st.code(traceback.format_exc())
         if approve_cols[1].button("✏️ Modifica chat", use_container_width=True):
             st.session_state.proposed_context = None
             st.rerun()
@@ -393,18 +445,26 @@ def render_agent() -> None:
     render_agent_page(slug=slug, project=project, agent_def=ad, project_agent=pa, store=store)
 
     st.divider()
-    # Approve / reset / notes / external link
-    cols = st.columns([1, 1, 1])
-    if pa.status == "pending_approval":
-        if cols[0].button("✅ Approva", type="primary", use_container_width=True):
-            store.update_agent(project_id, slug, status="completed")
-            _go("dashboard", project_id=project_id)
-    if cols[1].button("🔄 Reset stato", use_container_width=True):
-        new_status = "waiting_input" if ad.required_inputs else "received"
-        store.update_agent(project_id, slug, status=new_status, output={})
-        _go("agent", project_id=project_id, agent_slug=slug)
-    if ad.external_url and cols[2].link_button("🔗 Apri agente standalone", ad.external_url, use_container_width=True):
-        pass
+    # Per il Promise Writer l'approvazione e` per-promessa (gestita dentro
+    # render_agent_page), NON qui in cima.
+    if slug != "promise":
+        cols = st.columns([1, 1, 1])
+        if pa.status == "pending_approval":
+            if cols[0].button("✅ Approva", type="primary", use_container_width=True):
+                store.update_agent(project_id, slug, status="completed")
+                _go("dashboard", project_id=project_id)
+        if cols[1].button("🔄 Reset stato", use_container_width=True):
+            new_status = "waiting_input" if ad.required_inputs else "received"
+            store.update_agent(project_id, slug, status=new_status, output={})
+            _go("agent", project_id=project_id, agent_slug=slug)
+        if ad.external_url:
+            cols[2].link_button("🔗 Apri agente standalone", ad.external_url, use_container_width=True)
+    else:
+        if ad.external_url:
+            st.link_button(
+                "🔗 Apri Promise Writer standalone (editing fine per-campo + undo)",
+                ad.external_url,
+            )
 
     notes = st.text_area("📝 Note interne (visibili solo qui)", value=pa.notes, height=80, key=f"notes_{slug}")
     if st.button("Salva note", key=f"save_notes_{slug}"):
