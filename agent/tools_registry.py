@@ -6,15 +6,21 @@ from typing import Any
 
 from tools import analyze as analyze_t
 from tools import copy as copy_t
+from tools import landing as landing_t
 from tools import promise as promise_t
+from tools import refresh as refresh_t
 from tools import visual_and_launch as launch_t
+from tools import workflow as workflow_t
 
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     *promise_t.SCHEMAS,
     *copy_t.SCHEMAS,
+    *landing_t.SCHEMAS,
     *analyze_t.SCHEMAS,
+    *refresh_t.SCHEMAS,
     *launch_t.SCHEMAS,
+    *workflow_t.SCHEMAS,
 ]
 
 
@@ -49,5 +55,17 @@ def dispatch(name: str, args: dict[str, Any], *, anthropic_api_key: str = "") ->
         return launch_t.make_visual_brief(**args)
     if name == "propose_ad_launch":
         return launch_t.propose_ad_launch(**args)
+
+    # web designer
+    if name == "generate_landing_html":
+        return landing_t.generate_landing_html(api_key=api_key, **args)
+
+    # funnel refresher
+    if name == "diagnose_campaign_refresh":
+        return refresh_t.diagnose_campaign_refresh(**args)
+
+    # automation specialist
+    if name == "build_hubspot_funnel_workflow":
+        return workflow_t.build_hubspot_funnel_workflow(**args)
 
     raise ValueError(f"Tool sconosciuto: {name}")

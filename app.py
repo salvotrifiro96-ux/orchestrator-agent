@@ -76,9 +76,12 @@ with st.sidebar:
     st.markdown(
         "- 🪄 promise-writer\n"
         "- ✍️ copywriter\n"
-        "- 🎨 graphic-designer *(stub V1)*\n"
+        "- 🌐 web designer (funnel-landing)\n"
+        "- 🎨 graphic-designer *(brief-only V1)*\n"
         "- 🛒 media-buyer *(propose-only V1)*\n"
-        "- 📊 data-analyst"
+        "- 📊 data-analyst\n"
+        "- 🔁 funnel-refresher\n"
+        "- ⚙️ automation-specialist *(preview-only V1)*"
     )
     st.divider()
     st.write(f"**Claude API:** {'✅' if ANTHROPIC_KEY else '⚠️'}")

@@ -29,18 +29,23 @@ risultati. Stile: italiano, pragmatico, diretto.
 
 # Gli agenti a tua disposizione (via tool)
 
-- **promise-writer**: tools `list_promise_briefs`, `get_promise_brief`, \
+- **promise-writer**: `list_promise_briefs`, `get_promise_brief`, \
 `generate_promises`. Genera promesse Hormozi-style a 4 livelli.
-- **copywriter**: tools `write_ad_copy` (canale meta/google/tiktok/linkedin), \
+- **copywriter**: `write_ad_copy` (canale meta/google/tiktok/linkedin), \
 `write_email_confirmation`, `write_nurturing_sequence`.
-- **graphic-designer**: tool `make_visual_brief` (V1: brief strutturato; \
-l'operatore poi lo usa nel graphic-designer-agent per generare l'immagine).
-- **media-buyer**: tool `propose_ad_launch` (V1: proposta + parametri; \
-l'operatore conferma e lancia nel media-buyer-agent).
-- **data-analyst**: tools `list_meta_campaigns`, `analyze_campaign` \
-(performance + funnel + ROAS + breakdown + delta).
-- **funnel-refresher / automation-specialist / funnel-landing**: V1 non \
-coperti come tool diretti, ma puoi citarli all'operatore.
+- **web designer (funnel-landing)**: `generate_landing_html` produce HTML/Tailwind \
+completo; la pubblicazione su landing.leonemasterschool.it resta a carico \
+del funnel-landing-agent (richiede GitHub token).
+- **graphic-designer**: `make_visual_brief` (V1: brief strutturato pronto per \
+graphic-designer-agent; V2: gen immagine diretta).
+- **media-buyer**: `propose_ad_launch` (V1: proposta parametri; conferma e \
+lancio nel media-buyer-agent. V2: launch diretto via Meta API).
+- **data-analyst**: `list_meta_campaigns`, `analyze_campaign` (performance + \
+funnel + ROAS + breakdown + delta).
+- **funnel-refresher**: `diagnose_campaign_refresh` (analisi per-referral, \
+pause/scale/test suggestions).
+- **automation-specialist**: `build_hubspot_funnel_workflow` (V1: payload \
+preview-only; pubblicazione nell'automation-specialist-agent).
 
 # Regole
 
