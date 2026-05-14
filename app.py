@@ -1,21 +1,34 @@
-"""Orchestrator Agent — Streamlit chat UI.
+"""Orchestrator Agent — piattaforma marketing AI Leone.
 
-Pattern:
-  - History conversazionale in session_state (formato Anthropic messages)
-  - Ogni input utente → chiama orchestrator.run_loop → loop tool-use → assistant final
-  - Render: messaggi user/assistant + caption per tool_use/tool_result
+Flow:
+  HOME (lista progetti + New)
+    ↓ New Project
+  DISCOVERY (chat con orchestratore per costruire contesto)
+    ↓ Approva contesto
+  DASHBOARD (8 agenti con stato + click per entrare)
+    ↓ click agente
+  AGENT (form input + genera + output + approva → torna a dashboard)
 """
 from __future__ import annotations
 
 import json
 import os
 import traceback
+from datetime import datetime
 from typing import Any
 
 import streamlit as st
 from dotenv import load_dotenv
 
-from agent.orchestrator import run_loop
+from agent.orchestrator import CONTEXT_FIELDS, run_discovery_turn
+from agent.projects import (
+    AGENT_DEFS,
+    AGENT_DEFS_BY_SLUG,
+    AgentDef,
+    Project,
+    ProjectAgent,
+    ProjectStore,
+)
 
 
 load_dotenv()
@@ -34,7 +47,6 @@ def _secret(key: str, default: str = "") -> str:
 APP_PASSWORD = _secret("APP_PASSWORD")
 ANTHROPIC_KEY = _secret("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = _secret("CLAUDE_MODEL", "claude-sonnet-4-6")
-
 
 st.set_page_config(page_title="Orchestrator Agent", layout="wide", page_icon="🎯")
 
@@ -58,140 +70,357 @@ def _password_gate() -> None:
 _password_gate()
 
 
-# ── State ──────────────────────────────────────────────────────────
-if "messages" not in st.session_state:
-    st.session_state.messages = []  # history conversazionale completa
-if "ui_log" not in st.session_state:
-    # log "human readable" del flow (testi + tool calls + risultati)
-    # ogni voce: {"kind": "user|assistant|tool_use|tool_result|tool_error", ...}
-    st.session_state.ui_log = []
+# ── Routing state ─────────────────────────────────────────────────
+if "view" not in st.session_state:
+    st.session_state.view = "home"  # home | discovery | dashboard | agent
+if "project_id" not in st.session_state:
+    st.session_state.project_id = None
+if "agent_slug" not in st.session_state:
+    st.session_state.agent_slug = None
+if "discovery_messages" not in st.session_state:
+    st.session_state.discovery_messages = []
+if "proposed_context" not in st.session_state:
+    st.session_state.proposed_context = None
 
 
-# ── Sidebar ────────────────────────────────────────────────────────
-with st.sidebar:
-    st.header("🎯 Orchestrator")
-    st.caption("PM virtuale del team Marketing AI Leone.")
-    st.divider()
-    st.markdown("**Agenti collegati:**")
-    st.markdown(
-        "- 🪄 promise-writer\n"
-        "- ✍️ copywriter\n"
-        "- 🌐 web designer (funnel-landing)\n"
-        "- 🎨 graphic-designer *(brief-only V1)*\n"
-        "- 🛒 media-buyer *(propose-only V1)*\n"
-        "- 📊 data-analyst\n"
-        "- 🔁 funnel-refresher\n"
-        "- ⚙️ automation-specialist *(preview-only V1)*"
-    )
-    st.divider()
-    st.write(f"**Claude API:** {'✅' if ANTHROPIC_KEY else '⚠️'}")
-    st.write(f"**Model:** `{CLAUDE_MODEL}`")
-    st.divider()
-    if st.button("🔄 Nuova chat", use_container_width=True):
-        st.session_state.messages = []
-        st.session_state.ui_log = []
-        st.rerun()
-
-
-# ── Header ─────────────────────────────────────────────────────────
-st.title("🎯 Orchestrator")
-st.caption(
-    "Dimmi cosa vuoi fare. Esempi: "
-    "_'analizza la campagna 22 nicchie'_, "
-    "_'scrivi 5 copy meta per il workshop 15 giugno'_, "
-    "_'mostrami gli ultimi 5 brief del promessatore'_."
-)
-
-
-# ── Render history ─────────────────────────────────────────────────
-def _render_entry(entry: dict[str, Any]) -> None:
-    kind = entry.get("kind")
-    if kind == "user":
-        with st.chat_message("user"):
-            st.markdown(entry["text"])
-    elif kind == "assistant":
-        with st.chat_message("assistant"):
-            st.markdown(entry["text"])
-    elif kind == "tool_use":
-        with st.chat_message("assistant", avatar="🛠️"):
-            name = entry.get("name", "")
-            inp = entry.get("input", {})
-            st.caption(f"**Tool call**: `{name}`")
-            with st.expander("Argomenti", expanded=False):
-                st.json(inp)
-    elif kind == "tool_result":
-        with st.chat_message("assistant", avatar="📦"):
-            name = entry.get("name", "")
-            res = entry.get("result", {})
-            preview = _summarize_result(name, res)
-            st.caption(f"**Tool result** `{name}` — {preview}")
-            with st.expander("Risultato completo", expanded=False):
-                st.json(res)
-    elif kind == "tool_error":
-        with st.chat_message("assistant", avatar="⚠️"):
-            st.error(f"**Errore tool** `{entry.get('name','')}`: {entry.get('error','')}")
-
-
-def _summarize_result(name: str, res: Any) -> str:
-    if not isinstance(res, dict):
-        return "ok"
-    if "error" in res:
-        return f"ERROR: {str(res['error'])[:100]}"
-    # custom summaries per tool
-    if name == "list_promise_briefs":
-        return f"{len(res.get('briefs', []))} brief"
-    if name == "list_meta_campaigns":
-        return f"{res.get('total', 0)} campagne"
-    if name == "generate_promises":
-        return f"{len(res.get('promises', []))} promesse generate"
-    if name == "analyze_campaign":
-        mi = res.get("meta_insights", {})
-        return f"spesa €{mi.get('spend', 0)}, lead {mi.get('leads_meta', 0)}"
-    return "ok"
-
-
-for entry in st.session_state.ui_log:
-    _render_entry(entry)
-
-
-# ── Chat input ─────────────────────────────────────────────────────
-prompt = st.chat_input("Cosa vuoi che faccia?")
-if prompt:
-    if not ANTHROPIC_KEY:
-        st.error("Manca `ANTHROPIC_API_KEY`.")
-        st.stop()
-
-    # 1. Mostra subito il messaggio user
-    st.session_state.ui_log.append({"kind": "user", "text": prompt})
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    # 2. Esegui il loop tool-use
-    log_buffer: list[dict[str, Any]] = []
-    def _on_event(ev: dict[str, Any]) -> None:
-        t = ev.get("type")
-        if t == "assistant_text":
-            log_buffer.append({"kind": "assistant", "text": ev["text"]})
-        elif t == "tool_use":
-            log_buffer.append({"kind": "tool_use", "name": ev["name"], "input": ev.get("input", {})})
-        elif t == "tool_result":
-            log_buffer.append({"kind": "tool_result", "name": ev["name"], "result": ev.get("result", {})})
-        elif t == "tool_error":
-            log_buffer.append({"kind": "tool_error", "name": ev["name"], "error": ev.get("error", "")})
-
-    with st.spinner("Sto coordinando il team…"):
+def _store() -> ProjectStore | None:
+    if "_project_store" not in st.session_state:
         try:
-            run_loop(
-                api_key=ANTHROPIC_KEY,
-                model=CLAUDE_MODEL,
-                messages=st.session_state.messages,
-                on_event=_on_event,
-                max_iterations=8,
-            )
-        except Exception as e:
-            log_buffer.append({"kind": "tool_error", "name": "orchestrator", "error": f"{e}\n{traceback.format_exc()}"})
+            st.session_state._project_store = ProjectStore.from_env()
+        except Exception:
+            st.session_state._project_store = None
+    return st.session_state._project_store
 
-    # 3. Aggiungi al log persistente e rerun
-    st.session_state.ui_log.extend(log_buffer)
+
+def _go(view: str, **kwargs) -> None:
+    st.session_state.view = view
+    for k, v in kwargs.items():
+        st.session_state[k] = v
     st.rerun()
+
+
+# ── STATUS helpers ─────────────────────────────────────────────────
+STATUS_LABELS = {
+    "received": ("📨 Contesto ricevuto", "#64748b"),
+    "waiting_input": ("⏳ Attendo info", "#f59e0b"),
+    "work_in_progress": ("🔧 In lavorazione", "#3b82f6"),
+    "pending_approval": ("🧐 Da approvare", "#a855f7"),
+    "completed": ("✅ Completato", "#16a34a"),
+}
+
+
+def _status_badge(status: str) -> str:
+    label, color = STATUS_LABELS.get(status, (status, "#64748b"))
+    return (
+        f"<span style='background:{color}; color:white; padding:3px 10px; "
+        f"border-radius:12px; font-size:0.8rem; font-weight:600;'>{label}</span>"
+    )
+
+
+# ── HOME view: list projects + new ─────────────────────────────────
+def render_home() -> None:
+    st.title("🎯 Orchestrator")
+    st.caption("Piattaforma di lavoro del team Marketing AI di Leone Master School.")
+
+    store = _store()
+    if not store:
+        st.error("Supabase non configurato (`SUPABASE_URL` / `SUPABASE_SECRET_KEY`).")
+        return
+
+    col_new, col_spacer = st.columns([1, 3])
+    if col_new.button("➕ **New Project**", type="primary", use_container_width=True):
+        st.session_state.discovery_messages = []
+        st.session_state.proposed_context = None
+        try:
+            new_p = store.create_project(name=f"Progetto {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+            _go("discovery", project_id=new_p.id)
+        except Exception as e:
+            st.error(f"Creazione progetto fallita: {e}")
+
+    st.divider()
+
+    st.subheader("📂 Progetti")
+    try:
+        projects = store.list_projects(limit=50)
+    except Exception as e:
+        st.error(f"Errore lettura progetti: {e}")
+        return
+    if not projects:
+        st.info("Nessun progetto ancora. Clicca **New Project** per iniziare.")
+        return
+
+    for p in projects:
+        with st.container(border=True):
+            cols = st.columns([4, 2, 1, 1])
+            cols[0].markdown(f"**{p.name}**")
+            cols[0].caption(
+                f"`{p.id[:8]}…` · status: `{p.status}` · "
+                f"agg. {p.updated_at[:16].replace('T', ' ')}"
+            )
+            cols[1].caption(
+                f"Contesto: {'✅' if p.context else '—'}"
+            )
+            if cols[2].button("Apri →", key=f"open_{p.id}"):
+                if p.status == "discovery":
+                    st.session_state.discovery_messages = p.discovery_messages or []
+                    _go("discovery", project_id=p.id)
+                else:
+                    _go("dashboard", project_id=p.id)
+            if cols[3].button("🗑️", key=f"del_{p.id}", help="Elimina"):
+                try:
+                    store.delete_project(p.id)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Delete: {e}")
+
+
+# ── DISCOVERY view: chat per costruire contesto ────────────────────
+def render_discovery() -> None:
+    store = _store()
+    project_id = st.session_state.project_id
+    if not store or not project_id:
+        _go("home")
+        return
+    project = store.get_project(project_id)
+    if not project:
+        st.error("Progetto non trovato")
+        _go("home")
+        return
+
+    # Header
+    cols = st.columns([5, 1])
+    cols[0].title(f"🪄 Discovery — {project.name}")
+    if cols[1].button("← Home"):
+        _go("home")
+
+    st.caption(
+        "Parla con l'orchestratore. Ti fara` domande mirate per costruire il "
+        "contesto ufficiale del progetto. Quando avra` raccolto tutto, ti "
+        "proporra` un riassunto strutturato che potrai approvare."
+    )
+
+    # Render history
+    for msg in st.session_state.discovery_messages:
+        role = msg.get("role")
+        content = msg.get("content")
+        if role == "user":
+            with st.chat_message("user"):
+                st.markdown(content if isinstance(content, str) else str(content))
+        elif role == "assistant":
+            with st.chat_message("assistant"):
+                blocks = content if isinstance(content, list) else [{"type": "text", "text": str(content)}]
+                for b in blocks:
+                    if b.get("type") == "text":
+                        st.markdown(b.get("text", ""))
+                    elif b.get("type") == "tool_use":
+                        st.caption(f"📋 Contesto proposto")
+
+    # Proposed context (se presente)
+    if st.session_state.proposed_context:
+        st.divider()
+        st.subheader("📋 Contesto proposto")
+        ctx = st.session_state.proposed_context
+        edited = {}
+        for field, _label in CONTEXT_FIELDS:
+            val = ctx.get(field, "")
+            if field == "channels":
+                # Channels e` lista
+                channels = ctx.get("channels") or []
+                opts = ["meta", "google", "tiktok", "linkedin"]
+                edited[field] = st.multiselect(
+                    "Canali", options=opts, default=[c for c in channels if c in opts]
+                )
+            else:
+                edited[field] = st.text_area(
+                    field.replace("_", " ").title(),
+                    value=val,
+                    height=70,
+                    key=f"ctx_{field}",
+                )
+
+        approve_cols = st.columns([1, 1, 3])
+        if approve_cols[0].button("✅ Approva e distribuisci", type="primary", use_container_width=True):
+            try:
+                # Salva contesto finale + cambia status progetto
+                store.update_project(
+                    project_id,
+                    context=edited,
+                    status="active",
+                    name=edited.get("campaign_name_proposal") or project.name,
+                    discovery_messages=st.session_state.discovery_messages,
+                )
+                # Inizializza i record agente (idempotente)
+                store.init_agents_for_project(project_id, edited)
+                # Reset state
+                st.session_state.proposed_context = None
+                st.session_state.discovery_messages = []
+                _go("dashboard", project_id=project_id)
+            except Exception as e:
+                st.error(f"Approvazione fallita: {e}")
+        if approve_cols[1].button("✏️ Modifica chat", use_container_width=True):
+            st.session_state.proposed_context = None
+            st.rerun()
+
+    # Chat input
+    if not st.session_state.proposed_context:
+        prompt = st.chat_input("Scrivi qui (parti dicendo brief progetto, brand, target, obiettivo…)")
+        if prompt:
+            if not ANTHROPIC_KEY:
+                st.error("Manca ANTHROPIC_API_KEY")
+                return
+            st.session_state.discovery_messages.append({"role": "user", "content": prompt})
+            with st.spinner("L'orchestratore sta pensando…"):
+                try:
+                    updated_msgs, proposed = run_discovery_turn(
+                        api_key=ANTHROPIC_KEY,
+                        model=CLAUDE_MODEL,
+                        messages=st.session_state.discovery_messages,
+                        max_iterations=3,
+                    )
+                    st.session_state.discovery_messages = updated_msgs
+                    if proposed:
+                        st.session_state.proposed_context = proposed
+                    # Persisti history nel progetto
+                    store.update_project(project_id, discovery_messages=updated_msgs)
+                except Exception as e:
+                    st.error(f"Errore: {e}")
+                    with st.expander("Traceback"):
+                        st.code(traceback.format_exc())
+            st.rerun()
+
+
+# ── DASHBOARD view: 8 cards ────────────────────────────────────────
+def render_dashboard() -> None:
+    store = _store()
+    project_id = st.session_state.project_id
+    if not store or not project_id:
+        _go("home")
+        return
+    project = store.get_project(project_id)
+    if not project:
+        st.error("Progetto non trovato")
+        _go("home")
+        return
+
+    cols = st.columns([5, 1, 1])
+    cols[0].title(f"📊 Dashboard — {project.name}")
+    if cols[1].button("✏️ Modifica contesto"):
+        _go("discovery", project_id=project_id)
+    if cols[2].button("← Home"):
+        _go("home")
+
+    # Mostra contesto in expander
+    with st.expander("📋 Contesto progetto", expanded=False):
+        if project.context:
+            for field, label in CONTEXT_FIELDS:
+                val = project.context.get(field, "")
+                if val:
+                    pretty = ", ".join(val) if isinstance(val, list) else str(val)
+                    st.markdown(f"**{field.replace('_', ' ').title()}**: {pretty}")
+        else:
+            st.info("Nessun contesto ancora.")
+
+    st.divider()
+    st.subheader("👥 Team agenti")
+
+    # Mappo gli agenti del progetto in dict slug → ProjectAgent
+    agents_by_slug = {a.agent_slug: a for a in (project.agents or [])}
+
+    # Render cards in 2 colonne
+    items = AGENT_DEFS
+    for i in range(0, len(items), 2):
+        row_cols = st.columns(2)
+        for col, ad in zip(row_cols, items[i : i + 2]):
+            pa = agents_by_slug.get(ad.slug)
+            status = pa.status if pa else "received"
+            with col.container(border=True):
+                head_cols = st.columns([6, 2])
+                head_cols[0].markdown(f"### {ad.emoji} {ad.name}")
+                head_cols[1].markdown(_status_badge(status), unsafe_allow_html=True)
+                st.caption(ad.description)
+                btn_cols = st.columns([2, 1])
+                if btn_cols[0].button(
+                    f"Apri {ad.name} →",
+                    key=f"open_agent_{ad.slug}",
+                    use_container_width=True,
+                ):
+                    _go("agent", project_id=project_id, agent_slug=ad.slug)
+                if ad.external_url and btn_cols[1].button(
+                    "🔗", key=f"ext_{ad.slug}", help=f"Apri {ad.name} esterno"
+                ):
+                    st.markdown(f"[Apri in nuova tab]({ad.external_url})")
+
+
+# ── AGENT view: dispatcher su slug ─────────────────────────────────
+def render_agent() -> None:
+    from agent_pages import render_agent_page  # lazy import per non rallentare home
+    project_id = st.session_state.project_id
+    slug = st.session_state.agent_slug
+    store = _store()
+    if not store or not project_id or not slug:
+        _go("home")
+        return
+
+    project = store.get_project(project_id)
+    pa = store.get_agent(project_id, slug)
+    if not project or not pa:
+        st.error("Progetto o agente non trovato")
+        _go("dashboard", project_id=project_id)
+        return
+
+    ad = AGENT_DEFS_BY_SLUG.get(slug)
+    if not ad:
+        st.error(f"Agente sconosciuto: {slug}")
+        _go("dashboard", project_id=project_id)
+        return
+
+    # Header + nav
+    cols = st.columns([5, 2])
+    cols[0].title(f"{ad.emoji} {ad.name}")
+    cols[0].markdown(_status_badge(pa.status), unsafe_allow_html=True)
+    if cols[1].button("← Torna alla dashboard", use_container_width=True):
+        _go("dashboard", project_id=project_id)
+
+    st.caption(ad.description)
+    with st.expander("📋 Contesto progetto (read-only)", expanded=False):
+        for field, _label in CONTEXT_FIELDS:
+            val = project.context.get(field, "")
+            if val:
+                pretty = ", ".join(val) if isinstance(val, list) else str(val)
+                st.markdown(f"**{field.replace('_', ' ').title()}**: {pretty}")
+
+    st.divider()
+    render_agent_page(slug=slug, project=project, agent_def=ad, project_agent=pa, store=store)
+
+    st.divider()
+    # Approve / reset / notes / external link
+    cols = st.columns([1, 1, 1])
+    if pa.status == "pending_approval":
+        if cols[0].button("✅ Approva", type="primary", use_container_width=True):
+            store.update_agent(project_id, slug, status="completed")
+            _go("dashboard", project_id=project_id)
+    if cols[1].button("🔄 Reset stato", use_container_width=True):
+        new_status = "waiting_input" if ad.required_inputs else "received"
+        store.update_agent(project_id, slug, status=new_status, output={})
+        _go("agent", project_id=project_id, agent_slug=slug)
+    if ad.external_url and cols[2].link_button("🔗 Apri agente standalone", ad.external_url, use_container_width=True):
+        pass
+
+    notes = st.text_area("📝 Note interne (visibili solo qui)", value=pa.notes, height=80, key=f"notes_{slug}")
+    if st.button("Salva note", key=f"save_notes_{slug}"):
+        store.update_agent(project_id, slug, notes=notes)
+        st.success("Note salvate.")
+
+
+# ── Router ─────────────────────────────────────────────────────────
+view = st.session_state.view
+if view == "home":
+    render_home()
+elif view == "discovery":
+    render_discovery()
+elif view == "dashboard":
+    render_dashboard()
+elif view == "agent":
+    render_agent()
+else:
+    _go("home")
